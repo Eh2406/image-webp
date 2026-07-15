@@ -1021,62 +1021,15 @@ mod tests {
         // InconsistentImageSizes rather than panicking with an out-of-bounds slice
         // in fill_rgba. The ANMF declares a 1x1 frame but the VP8 keyframe decodes
         // to 2x2.
-        const VP8_2X2: [u8; 48] = [
-            0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x34, 0x25,
-            0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03, 0xb0, 0x00, 0xfe, 0xf0, 0xc4, 0x0b,
-            0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff, 0x20, 0x3f, 0xe4, 0x07, 0xfc, 0x80,
-            0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+
+        let bytes = [
+            82, 73, 70, 70, 126, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 2, 0, 0, 0,
+            1, 0, 0, 1, 0, 0, 65, 78, 73, 77, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 78, 77, 70, 82, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 76, 80, 72, 2, 0, 0, 0, 0, 0,
+            86, 80, 56, 32, 48, 0, 0, 0, 208, 1, 0, 157, 1, 42, 2, 0, 2, 0, 2, 0, 52, 37, 160, 2,
+            116, 186, 1, 248, 0, 3, 176, 0, 254, 240, 196, 11, 255, 32, 185, 97, 117, 200, 215,
+            255, 32, 63, 228, 7, 252, 128, 255, 248, 242, 0, 0, 0,
         ];
-
-        fn chunk(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
-            let mut v = Vec::new();
-            v.extend_from_slice(fourcc);
-            v.extend_from_slice(&(body.len() as u32).to_le_bytes());
-            v.extend_from_slice(body);
-            if body.len() % 2 == 1 {
-                v.push(0);
-            }
-            v
-        }
-
-        fn le3(v: u32) -> [u8; 3] {
-            [
-                (v & 0xff) as u8,
-                ((v >> 8) & 0xff) as u8,
-                ((v >> 16) & 0xff) as u8,
-            ]
-        }
-
-        let mut vp8x = Vec::new();
-        vp8x.push(0x02); // flags: animation
-        vp8x.extend_from_slice(&le3(0)); // reserved
-        vp8x.extend_from_slice(&le3(2 - 1)); // canvas_width - 1 => 2
-        vp8x.extend_from_slice(&le3(2 - 1)); // canvas_height - 1 => 2
-
-        let mut anim = Vec::new();
-        anim.extend_from_slice(&[0, 0, 0, 0]);
-        anim.extend_from_slice(&0u16.to_le_bytes());
-
-        let mut anmf = Vec::new();
-        anmf.extend_from_slice(&le3(0)); // frame_x / 2
-        anmf.extend_from_slice(&le3(0)); // frame_y / 2
-        anmf.extend_from_slice(&le3(1 - 1)); // frame_width - 1 => 1
-        anmf.extend_from_slice(&le3(1 - 1)); // frame_height - 1 => 1
-        anmf.extend_from_slice(&le3(0)); // duration
-        anmf.push(0x00); // frame_info
-        anmf.extend_from_slice(&chunk(b"ALPH", &[0x00, 0x00]));
-        anmf.extend_from_slice(&chunk(b"VP8 ", &VP8_2X2));
-
-        let mut body = Vec::new();
-        body.extend_from_slice(b"WEBP");
-        body.extend_from_slice(&chunk(b"VP8X", &vp8x));
-        body.extend_from_slice(&chunk(b"ANIM", &anim));
-        body.extend_from_slice(&chunk(b"ANMF", &anmf));
-
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&body);
 
         let mut decoder = WebPDecoder::new(std::io::Cursor::new(bytes)).unwrap();
         assert!(decoder.is_animated());
