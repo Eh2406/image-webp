@@ -830,6 +830,10 @@ impl<R: BufRead + Seek> WebPDecoder<R> {
                 }
 
                 let frame = Vp8Decoder::decode_frame((&mut self.r).take(next_chunk_size))?;
+                if u32::from(frame.width) != frame_width || u32::from(frame.height) != frame_height
+                {
+                    return Err(DecodingError::InconsistentImageSizes);
+                }
 
                 let mut rgba_frame = vec![0; frame_width as usize * frame_height as usize * 4];
                 frame.fill_rgba(&mut rgba_frame, self.webp_decode_options.lossy_upsampling);
@@ -1007,6 +1011,81 @@ mod tests {
         // All pixels are the same value
         let first_pixel = &data[..RGB_BPP];
         assert!(data.chunks_exact(3).all(|ch| ch.iter().eq(first_pixel)));
+    }
+
+    #[test]
+    fn read_frame_alph_vp8_dimension_mismatch() {
+        // Regression test: an animated extended WebP whose ANMF frame carries an
+        // ALPH sub-chunk followed by a VP8 sub-chunk whose decoded dimensions do
+        // not match the ANMF-declared frame size must be rejected with
+        // InconsistentImageSizes rather than panicking with an out-of-bounds slice
+        // in fill_rgba. The ANMF declares a 1x1 frame but the VP8 keyframe decodes
+        // to 2x2.
+        const VP8_2X2: [u8; 48] = [
+            0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x34, 0x25,
+            0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03, 0xb0, 0x00, 0xfe, 0xf0, 0xc4, 0x0b,
+            0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff, 0x20, 0x3f, 0xe4, 0x07, 0xfc, 0x80,
+            0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+        ];
+
+        fn chunk(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(fourcc);
+            v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            v.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                v.push(0);
+            }
+            v
+        }
+
+        fn le3(v: u32) -> [u8; 3] {
+            [
+                (v & 0xff) as u8,
+                ((v >> 8) & 0xff) as u8,
+                ((v >> 16) & 0xff) as u8,
+            ]
+        }
+
+        let mut vp8x = Vec::new();
+        vp8x.push(0x02); // flags: animation
+        vp8x.extend_from_slice(&le3(0)); // reserved
+        vp8x.extend_from_slice(&le3(2 - 1)); // canvas_width - 1 => 2
+        vp8x.extend_from_slice(&le3(2 - 1)); // canvas_height - 1 => 2
+
+        let mut anim = Vec::new();
+        anim.extend_from_slice(&[0, 0, 0, 0]);
+        anim.extend_from_slice(&0u16.to_le_bytes());
+
+        let mut anmf = Vec::new();
+        anmf.extend_from_slice(&le3(0)); // frame_x / 2
+        anmf.extend_from_slice(&le3(0)); // frame_y / 2
+        anmf.extend_from_slice(&le3(1 - 1)); // frame_width - 1 => 1
+        anmf.extend_from_slice(&le3(1 - 1)); // frame_height - 1 => 1
+        anmf.extend_from_slice(&le3(0)); // duration
+        anmf.push(0x00); // frame_info
+        anmf.extend_from_slice(&chunk(b"ALPH", &[0x00, 0x00]));
+        anmf.extend_from_slice(&chunk(b"VP8 ", &VP8_2X2));
+
+        let mut body = Vec::new();
+        body.extend_from_slice(b"WEBP");
+        body.extend_from_slice(&chunk(b"VP8X", &vp8x));
+        body.extend_from_slice(&chunk(b"ANIM", &anim));
+        body.extend_from_slice(&chunk(b"ANMF", &anmf));
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&body);
+
+        let mut decoder = WebPDecoder::new(std::io::Cursor::new(bytes)).unwrap();
+        assert!(decoder.is_animated());
+        let buf_size = decoder.output_buffer_size().unwrap();
+        let mut buf = vec![0u8; buf_size];
+        assert!(matches!(
+            decoder.read_frame(&mut buf),
+            Err(DecodingError::InconsistentImageSizes)
+        ));
     }
 
     #[test]
